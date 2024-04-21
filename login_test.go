@@ -1,4 +1,4 @@
-package gologin
+package scslogin
 
 import (
 	"context"
@@ -34,7 +34,7 @@ func loadUser(ctx context.Context, id string) (TestUser, error) {
 
 func newTestServer() *httptest.Server {
 	sessionManager := scs.New()
-	loginManager := NewLoginManager(sessionManager, DefaultLoginRedirectConfig("/login"), loadUser)
+	loginManager := New(sessionManager, DefaultLoginRedirectConfig("/login"), loadUser)
 
 	r := chi.NewRouter()
 	r.Use(sessionManager.LoadAndSave)
@@ -54,7 +54,8 @@ func newTestServer() *httptest.Server {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		http.Redirect(w, r, "/protected", http.StatusSeeOther)
+		// Get ReturnTo from session, which will just go to / if it doesn't exist
+		http.Redirect(w, r, loginManager.PopReturnTo(r), http.StatusSeeOther)
 	})
 
 	// Logout endpoint
@@ -158,7 +159,7 @@ func TestLogin(t *testing.T) {
 	}
 
 	// Should have redirected to the protected page
-	if resp.Header.Get("Location") != "/protected" {
+	if resp.Header.Get("Location") != "/" {
 		t.Errorf("expected redirect to %q, got %q", "/protected", resp.Header.Get("Location"))
 	}
 }
@@ -296,7 +297,7 @@ func TestLoseAccessToProtectedAfterLogout(t *testing.T) {
 
 func testServerWithCustomRedirectFunc() *httptest.Server {
 	sessionManager := scs.New()
-	loginManager := NewLoginManager(sessionManager, NewLoginRedirectConfig("/login", func(s string, w http.ResponseWriter, r *http.Request) {
+	loginManager := New(sessionManager, NewLoginRedirectConfig("/login", func(s string, w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Custom-Header", "custom")
 		http.Redirect(w, r, s, http.StatusSeeOther)
 	}), loadUser)

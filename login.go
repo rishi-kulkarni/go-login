@@ -1,4 +1,4 @@
-package gologin
+package scslogin
 
 import (
 	"context"
@@ -13,6 +13,7 @@ import (
 var ErrUserNotAuthenticated = errors.New("user is not authenticated")
 
 const UserSessionKey = "user"
+const ReturnToKey = "ReturnTo"
 
 type UserProtocol[K any] interface {
 	IsAuthenticated() bool
@@ -26,9 +27,8 @@ type UserLoader[T UserProtocol[K], K comparable] func(context.Context, K) (T, er
 
 type LoginRedirectConfig struct {
 	// The URL to redirect to when the user is not authenticated. Should handle
-	// the next query parameter to redirect the user back to the original URL,
-	// and should point to a handler that sanitizes the next URL to prevent
-	// open redirects.
+	// redirection by checking the session for the "ReturnTo" key and redirecting
+	// the user to that URL if it exists.
 	LoginRedirectURL string
 
 	// A function that can be used to customize the redirect response.
@@ -66,11 +66,7 @@ func NewLoginRedirectConfig(redirectURL string, redirectFunc func(string, http.R
 }
 
 type IdentityManager[T UserProtocol[K], K comparable] struct {
-	SessionManager *scs.SessionManager
-	// The URL to redirect to when the user is not authenticated. Should handle
-	// the next query parameter to redirect the user back to the original URL,
-	// and should point to a handler that sanitizes the next URL to prevent
-	// open redirects.
+	SessionManager      *scs.SessionManager
 	LoginRedirectConfig LoginRedirectConfig
 	// The function to load the user object from your preferred data store.
 	// This function should take a uniquely-identifying string and return a
@@ -78,13 +74,13 @@ type IdentityManager[T UserProtocol[K], K comparable] struct {
 	loadUser UserLoader[T, K]
 }
 
-// NewLoginManager creates a new LoginManager instance. The LoginManager
+// New creates a new LoginManager instance. The LoginManager
 // requires a SessionManager instance, a login redirect URL, and a UserLoader
 // function.
 //
 // This function handles registering the UserProtocol type with encoding/gob,
 // which scs uses to encode and decode session data.
-func NewLoginManager[T UserProtocol[K], K comparable](sm *scs.SessionManager, lc LoginRedirectConfig, loadUser UserLoader[T, K]) *IdentityManager[T, K] {
+func New[T UserProtocol[K], K comparable](sm *scs.SessionManager, lc LoginRedirectConfig, loadUser UserLoader[T, K]) *IdentityManager[T, K] {
 	// Register the UserProtocol type with encoding/gob
 	gob.Register(*new(T))
 
@@ -155,8 +151,10 @@ func (im *IdentityManager[T, K]) LoginRequired(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, err := im.AuthenticatedUser(r)
 		if err != nil {
-			im.LoginRedirectConfig.RedirectFunc(im.LoginRedirectConfig.LoginRedirectURL, w, r)
+			// Set the ReturnTo key in the session to the current URL
+			im.SessionManager.Put(r.Context(), "ReturnTo", r.URL.Path)
 
+			im.LoginRedirectConfig.RedirectFunc(im.LoginRedirectConfig.LoginRedirectURL, w, r)
 			return
 		}
 
@@ -182,4 +180,18 @@ func (im *IdentityManager[T, K]) AuthenticatedUser(r *http.Request) (T, error) {
 		return *new(T), ErrUserNotAuthenticated
 	}
 	return user, nil
+}
+
+// PopReturnTo returns the "ReturnTo" URL from the session and removes it from
+// the session. If the "ReturnTo" key does not exist in the session, this function
+// will return the root URL ("/").
+//
+// This should be used in your login handler to redirect the user back to the
+// page they were trying to access before they were redirected to the login page.
+func (im *IdentityManager[T, K]) PopReturnTo(r *http.Request) string {
+	s := im.SessionManager.PopString(r.Context(), ReturnToKey)
+	if s == "" {
+		return "/"
+	}
+	return s
 }
