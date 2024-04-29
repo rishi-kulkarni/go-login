@@ -34,7 +34,7 @@ func loadUser(ctx context.Context, id string) (TestUser, error) {
 
 func newTestServer() *httptest.Server {
 	sessionManager := scs.New()
-	loginManager := New(sessionManager, DefaultLoginRedirectConfig("/login"), loadUser, nil)
+	loginManager := New(sessionManager, DefaultLoginRedirectConfig("/login"), loadUser)
 
 	r := chi.NewRouter()
 	r.Use(sessionManager.LoadAndSave)
@@ -55,6 +55,26 @@ func newTestServer() *httptest.Server {
 			return
 		}
 		// Get ReturnTo from session, which will just go to / if it doesn't exist
+		http.Redirect(w, r, loginManager.PopReturnTo(r), http.StatusSeeOther)
+	})
+
+	// Guest session login endpoint
+	r.Get("/guest", func(w http.ResponseWriter, r *http.Request) {
+		err := loginManager.CreateGuestSession(r, TestUser{})
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		http.Redirect(w, r, loginManager.PopReturnTo(r), http.StatusSeeOther)
+	})
+
+	// Misconfigured guest session login endpoint
+	r.Get("/misconfigured-guest", func(w http.ResponseWriter, r *http.Request) {
+		err := loginManager.CreateGuestSession(r, TestUser{ID: "1"})
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
 		http.Redirect(w, r, loginManager.PopReturnTo(r), http.StatusSeeOther)
 	})
 
@@ -161,6 +181,74 @@ func TestLogin(t *testing.T) {
 	// Should have redirected to the protected page
 	if resp.Header.Get("Location") != "/" {
 		t.Errorf("expected redirect to %q, got %q", "/protected", resp.Header.Get("Location"))
+	}
+}
+
+func TestGuestSession(t *testing.T) {
+	server := newTestServer()
+	defer server.Close()
+
+	client := http.Client{
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			// Prevent the client from following redirects
+			return http.ErrUseLastResponse
+		},
+	}
+	req, err := http.NewRequest("GET", server.URL+"/guest", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Errorf("expected status code %d, got %d", http.StatusSeeOther, resp.StatusCode)
+	}
+
+	// Should have redirected to the protected page
+	if resp.Header.Get("Location") != "/" {
+		t.Errorf("expected redirect to %q, got %q", "/protected", resp.Header.Get("Location"))
+	}
+
+	// Check that we got some cookies
+	if len(resp.Cookies()) == 0 {
+		t.Error("expected cookies in response")
+	}
+}
+
+func TestMisconfiguredGuestSession(t *testing.T) {
+	server := newTestServer()
+	defer server.Close()
+
+	client := http.Client{
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			// Prevent the client from following redirects
+			return http.ErrUseLastResponse
+		},
+	}
+	req, err := http.NewRequest("GET", server.URL+"/misconfigured-guest", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	// Should have returned a 500 error
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Errorf("expected status code %d, got %d", http.StatusInternalServerError, resp.StatusCode)
+	}
+
+	// No cookies should have been set
+	if len(resp.Cookies()) != 0 {
+		t.Error("expected no cookies in response")
 	}
 }
 
@@ -301,9 +389,6 @@ func testServerWithCustomRedirectFunc() *httptest.Server {
 		w.Header().Set("X-Custom-Header", "custom")
 		http.Redirect(w, r, s, http.StatusSeeOther)
 	}), loadUser,
-		func() TestUser {
-			return TestUser{}
-		},
 	)
 
 	r := chi.NewRouter()

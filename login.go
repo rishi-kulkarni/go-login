@@ -11,6 +11,7 @@ import (
 )
 
 var ErrUserNotAuthenticated = errors.New("user is not authenticated")
+var ErrGuestUserAuthenticated = errors.New("guest user must not be authenticated")
 
 const UserSessionKey = "user"
 const ReturnToKey = "ReturnTo"
@@ -24,11 +25,6 @@ type UserProtocol[K any] interface {
 // returns a user object of the specified type. This function is used to
 // attach a user object to the request context.
 type UserLoader[T UserProtocol[K], K comparable] func(context.Context, K) (T, error)
-
-// AnonymousUser is a function that returns an anonymous user object. This
-// function is used to attach an anonymous user object to the request context
-// when the user is not authenticated.
-type AnonymousUser[T UserProtocol[K], K comparable] func() T
 
 type LoginRedirectConfig struct {
 	// The URL to redirect to when the user is not authenticated. Should handle
@@ -77,11 +73,6 @@ type IdentityManager[T UserProtocol[K], K comparable] struct {
 	// This function should take a uniquely-identifying string and return a
 	// user object of the specified type.
 	loadUser UserLoader[T, K]
-
-	// The function to create an anonymous user object. This function should
-	// return a user object of the specified type. If this function is nil,
-	// the zero value of the user type will be used as the anonymous user.
-	anonymousUser AnonymousUser[T, K]
 }
 
 // New creates a new LoginManager instance. The LoginManager
@@ -94,7 +85,6 @@ func New[T UserProtocol[K], K comparable](
 	sm *scs.SessionManager,
 	lc LoginRedirectConfig,
 	loadUser UserLoader[T, K],
-	anonymousUser AnonymousUser[T, K],
 ) *IdentityManager[T, K] {
 	// Register the UserProtocol type with encoding/gob
 	gob.Register(*new(T))
@@ -103,7 +93,6 @@ func New[T UserProtocol[K], K comparable](
 		SessionManager:      sm,
 		LoginRedirectConfig: lc,
 		loadUser:            loadUser,
-		anonymousUser:       anonymousUser,
 	}
 }
 
@@ -130,6 +119,18 @@ func (im *IdentityManager[T, K]) LoginUser(r *http.Request, userID K) error {
 	return nil
 }
 
+// CreateGuestSession creates a new session with a guest user attached to it.
+// This function is analogous to LoginUser, and LogoutUser can be used to
+// destroy session created by this function, as well.
+func (im *IdentityManager[T, K]) CreateGuestSession(r *http.Request, guestUser T) error {
+	if guestUser.IsAuthenticated() {
+		return ErrGuestUserAuthenticated
+	}
+
+	im.SessionManager.Put(r.Context(), UserSessionKey, guestUser)
+	return nil
+}
+
 // LogoutUser logs out the current user. This function will remove the user
 // object from the request context and destroy the session token.
 func (im *IdentityManager[T, K]) LogoutUser(r *http.Request) error {
@@ -143,9 +144,6 @@ func (im *IdentityManager[T, K]) LogoutUser(r *http.Request) error {
 
 func (im *IdentityManager[T, K]) getOrCreateSessionUser(r *http.Request) T {
 	var anon T
-	if im.anonymousUser != nil {
-		anon = im.anonymousUser()
-	}
 
 	// Check if there even is a session
 	if !im.SessionManager.Exists(r.Context(), UserSessionKey) {
