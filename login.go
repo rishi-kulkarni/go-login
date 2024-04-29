@@ -25,6 +25,11 @@ type UserProtocol[K any] interface {
 // attach a user object to the request context.
 type UserLoader[T UserProtocol[K], K comparable] func(context.Context, K) (T, error)
 
+// AnonymousUser is a function that returns an anonymous user object. This
+// function is used to attach an anonymous user object to the request context
+// when the user is not authenticated.
+type AnonymousUser[T UserProtocol[K], K comparable] func() T
+
 type LoginRedirectConfig struct {
 	// The URL to redirect to when the user is not authenticated. Should handle
 	// redirection by checking the session for the "ReturnTo" key and redirecting
@@ -72,6 +77,11 @@ type IdentityManager[T UserProtocol[K], K comparable] struct {
 	// This function should take a uniquely-identifying string and return a
 	// user object of the specified type.
 	loadUser UserLoader[T, K]
+
+	// The function to create an anonymous user object. This function should
+	// return a user object of the specified type. If this function is nil,
+	// the zero value of the user type will be used as the anonymous user.
+	anonymousUser AnonymousUser[T, K]
 }
 
 // New creates a new LoginManager instance. The LoginManager
@@ -80,7 +90,12 @@ type IdentityManager[T UserProtocol[K], K comparable] struct {
 //
 // This function handles registering the UserProtocol type with encoding/gob,
 // which scs uses to encode and decode session data.
-func New[T UserProtocol[K], K comparable](sm *scs.SessionManager, lc LoginRedirectConfig, loadUser UserLoader[T, K]) *IdentityManager[T, K] {
+func New[T UserProtocol[K], K comparable](
+	sm *scs.SessionManager,
+	lc LoginRedirectConfig,
+	loadUser UserLoader[T, K],
+	anonymousUser AnonymousUser[T, K],
+) *IdentityManager[T, K] {
 	// Register the UserProtocol type with encoding/gob
 	gob.Register(*new(T))
 
@@ -88,6 +103,7 @@ func New[T UserProtocol[K], K comparable](sm *scs.SessionManager, lc LoginRedire
 		SessionManager:      sm,
 		LoginRedirectConfig: lc,
 		loadUser:            loadUser,
+		anonymousUser:       anonymousUser,
 	}
 }
 
@@ -126,16 +142,21 @@ func (im *IdentityManager[T, K]) LogoutUser(r *http.Request) error {
 }
 
 func (im *IdentityManager[T, K]) getOrCreateSessionUser(r *http.Request) T {
+	var anon T
+	if im.anonymousUser != nil {
+		anon = im.anonymousUser()
+	}
+
 	// Check if there even is a session
 	if !im.SessionManager.Exists(r.Context(), UserSessionKey) {
 		// If not, create an anonymous user
-		im.SessionManager.Put(r.Context(), UserSessionKey, *new(T))
+		im.SessionManager.Put(r.Context(), UserSessionKey, anon)
 	}
 
 	user, ok := im.SessionManager.Get(r.Context(), UserSessionKey).(T)
 	if !ok {
-		im.SessionManager.Put(r.Context(), UserSessionKey, *new(T))
-		return *new(T)
+		im.SessionManager.Put(r.Context(), UserSessionKey, anon)
+		return anon
 	}
 
 	return user

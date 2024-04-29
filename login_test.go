@@ -34,7 +34,7 @@ func loadUser(ctx context.Context, id string) (TestUser, error) {
 
 func newTestServer() *httptest.Server {
 	sessionManager := scs.New()
-	loginManager := New(sessionManager, DefaultLoginRedirectConfig("/login"), loadUser)
+	loginManager := New(sessionManager, DefaultLoginRedirectConfig("/login"), loadUser, nil)
 
 	r := chi.NewRouter()
 	r.Use(sessionManager.LoadAndSave)
@@ -300,7 +300,11 @@ func testServerWithCustomRedirectFunc() *httptest.Server {
 	loginManager := New(sessionManager, NewLoginRedirectConfig("/login", func(s string, w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Custom-Header", "custom")
 		http.Redirect(w, r, s, http.StatusSeeOther)
-	}), loadUser)
+	}), loadUser,
+		func() TestUser {
+			return TestUser{}
+		},
+	)
 
 	r := chi.NewRouter()
 	r.Use(sessionManager.LoadAndSave)

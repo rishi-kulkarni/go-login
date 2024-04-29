@@ -39,7 +39,7 @@ func main() {
 	sessionManager := scs.New()
 
 	// Create a new scslogin manager
-	loginManager := scslogin.New(sessionManager, scslogin.DefaultLoginRedirectConfig("/login"), loadUser)
+	loginManager := scslogin.New(sessionManager, scslogin.DefaultLoginRedirectConfig("/login"), loadUser, nil)
 
 	// Create a new http router
 	router := chi.NewRouter()
